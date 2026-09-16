@@ -1,0 +1,6 @@
+{
+  "name": "NutriTrack AI",
+  "description": "Production-ready multi-user personal calorie and nutrition tracking application with AI food analysis and personalized recommendations.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
