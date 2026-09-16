@@ -14,6 +14,7 @@ import { ProfilePage } from './pages/ProfilePage.tsx';
 import { AdminDashboardPage } from './pages/AdminDashboardPage.tsx';
 import { RefreshCw } from 'lucide-react';
 
+
 const AppContent: React.FC = () => {
   const { user, loading, isAdmin } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
