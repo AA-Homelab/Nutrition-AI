@@ -10,6 +10,7 @@ import {
 } from '../types.ts';
 import { firebaseService } from './firebaseService.ts';
 
+
 const TOKEN_STORAGE_KEY = 'nutritrack_auth_token';
 const API_URL_KEY = 'nutritrack_custom_api_url';
 const SYNC_MODE_KEY = 'nutritrack_storage_provider'; // 'firebase' | 'custom_api'
