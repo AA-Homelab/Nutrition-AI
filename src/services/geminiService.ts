@@ -1,8 +1,8 @@
 import { GoogleGenAI } from '@google/genai';
 import { DetectedFoodItem, FoodAnalysisResult, MealRecommendation, RecommendationResponse } from '../types.ts';
 
-// Configurable model name with fallback
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Use official non-deprecated model
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
 let genAIClient: GoogleGenAI | null = null;
 
@@ -43,40 +43,45 @@ export async function analyzeFoodImage(
     return getFallbackFoodAnalysis();
   }
 
-  const prompt = `You are a certified nutrition expert and computer vision food analyst.
-Analyze this food photograph and estimate the nutritional breakdown.
+  const prompt = `You are a world-class certified clinical nutritionist and precision computer vision food analyst.
+Inspect the food photograph with extreme care and provide an accurate, itemized nutritional breakdown.
 
-Instructions:
-1. Identify all visible food items and main ingredients on the plate.
-2. Estimate the serving size / portion for each item.
-3. Estimate calories, protein (g), carbohydrates (g), and fat (g) for each item.
-4. Calculate the cumulative total.
-5. Provide a confidence rating ('High', 'Medium', or 'Low') for each item.
-6. If the image is blurry or items cannot be identified with certainty, set confidence to 'Low' and note it.
-7. CRITICAL: These are approximations and estimates. Never diagnose conditions or claim exact laboratory values.
+Key Guidelines for High Accuracy:
+1. Examine the image thoroughly:
+   - Identify every distinct ingredient, side dish, sauce, condiment, garnish, oil/fat sheen, beverage, or bread item.
+   - Detect cooking preparation method (e.g. deep-fried vs. grilled vs. boiled vs. steamed vs. pan-seared with oil).
+2. Realistic Portion & Weight Estimation:
+   - Use visual reference cues (plate/bowl diameter, cutlery, cup size, thickness) to estimate exact grams or millilitres.
+   - Specify clear realistic portion descriptions (e.g., "1 cup cooked jasmine rice (~180g)", "1 medium fried chicken thigh (~120g)", "2 tbsp creamy ranch dressing (~30g)").
+3. Precise Macronutrient & Calorie Calculation:
+   - Base estimates on standard verified nutritional databases (such as USDA FoodData Central).
+   - Accurately account for hidden fats (cooking oils, butter, frying batter, sugar in sauces).
+   - Ensure the calculated calories roughly match the 4-4-9 macro rule: Calories ≈ (Protein × 4) + (Carbs × 4) + (Fat × 9).
+4. Set realistic confidence level ('High', 'Medium', or 'Low') for each item.
+${userNotes ? `\nImportant User Context / Ingredients specified by user: "${userNotes}" (Prioritize this user context to refine portion or ingredients accurately).` : ''}
 
-${userNotes ? `User context/note: "${userNotes}"` : ''}
-
-You MUST return ONLY valid JSON matching this exact structure:
+You MUST return ONLY valid JSON in this exact structure:
 {
+  "food_name": "Concise descriptive title of the overall dish or meal (e.g., 'Teriyaki Chicken Rice Bowl with Steamed Broccoli')",
+  "estimated_serving": "Overall serving description (e.g., '1 full plate (~420g)')",
   "foods": [
     {
-      "name": "Grilled chicken breast",
-      "serving": "150 g",
-      "calories": 240,
-      "protein_g": 46,
-      "carbs_g": 0,
-      "fat_g": 5,
+      "name": "Grilled Chicken Breast (skinless, diced)",
+      "serving": "150g (approx 1 palm-sized portion)",
+      "calories": 248,
+      "protein_g": 46.5,
+      "carbs_g": 0.0,
+      "fat_g": 5.4,
       "confidence": "High"
     }
   ],
   "total": {
-    "calories": 240,
-    "protein_g": 46,
-    "carbs_g": 0,
-    "fat_g": 5
+    "calories": 248,
+    "protein_g": 46.5,
+    "carbs_g": 0.0,
+    "fat_g": 5.4
   },
-  "notes": "Nutrition values are estimates based on visual portion sizes. Please review and adjust serving size or nutrition information before saving."
+  "notes": "Specific notes on ingredients identified, cooking method observed, or assumptions made."
 }`;
 
   try {
@@ -128,6 +133,12 @@ You MUST return ONLY valid JSON matching this exact structure:
     };
 
     return {
+      food_name: parsed.food_name || (foods.length > 0 ? foods[0].name : 'Detected Meal'),
+      estimated_serving: parsed.estimated_serving || (foods.length > 0 ? foods[0].serving : '1 serving'),
+      estimated_calories: total.calories,
+      estimated_protein: total.protein_g,
+      estimated_carbohydrates: total.carbs_g,
+      estimated_fat: total.fat_g,
       foods,
       total,
       notes: parsed.notes || 'Nutrition values are estimates. Please review and adjust the serving size or nutrition information before saving.',
