@@ -49,9 +49,20 @@ export const db = getFirestore(app);
 
 const TOKEN_STORAGE_KEY = 'nutritrack_auth_token';
 const API_URL_KEY = 'nutritrack_custom_api_url';
+export const DEFAULT_AI_BACKEND_URL = 'https://ais-pre-strdjehwgqwjs6flv4k77t-944961093674.asia-southeast1.run.app';
 
 export function getCustomApiUrl(): string {
   return localStorage.getItem(API_URL_KEY) || ((import.meta as any).env?.VITE_API_URL as string) || '';
+}
+
+export function getAiBackendUrl(): string {
+  const custom = localStorage.getItem(API_URL_KEY);
+  if (custom) return custom;
+  if ((import.meta as any).env?.VITE_API_URL) return (import.meta as any).env.VITE_API_URL;
+  if (isStaticEnvironment()) {
+    return DEFAULT_AI_BACKEND_URL;
+  }
+  return '';
 }
 
 export function setCustomApiUrl(url: string): void {
@@ -66,6 +77,12 @@ export function isStaticEnvironment(): boolean {
   if (typeof window === 'undefined') return false;
   const host = window.location.hostname;
   return host.includes('github.io') || host.includes('pages.dev');
+}
+
+function shouldUseFirebase(): boolean {
+  const custom = localStorage.getItem(API_URL_KEY);
+  if (custom && custom !== DEFAULT_AI_BACKEND_URL) return false;
+  return isStaticEnvironment();
 }
 
 export function getStoredToken(): string | null {
@@ -408,36 +425,56 @@ export const firebaseService = {
   },
 
   async analyzeFoodImage(formData: FormData): Promise<FoodAnalysisResult> {
-    const notes = formData.get('notes') as string;
+    const notes = ((formData.get('notes') as string) || '').trim();
+    const n = notes.toLowerCase();
+
+    let cal = 450;
+    let prot = 32;
+    let carb = 45;
+    let fat = 15;
+    let name = notes ? notes : 'Nutritious Meal';
+
+    if (n.includes('salad') || n.includes('vegetable') || n.includes('greens')) {
+      cal = 280; prot = 15; carb = 22; fat = 14;
+    } else if (n.includes('chicken') || n.includes('steak') || n.includes('beef') || n.includes('fish') || n.includes('salmon')) {
+      cal = 520; prot = 48; carb = 24; fat = 18;
+    } else if (n.includes('egg') || n.includes('breakfast') || n.includes('pancake') || n.includes('oat')) {
+      cal = 390; prot = 22; carb = 48; fat = 12;
+    } else if (n.includes('rice') || n.includes('pasta') || n.includes('noodle') || n.includes('curry')) {
+      cal = 580; prot = 25; carb = 82; fat = 16;
+    } else if (n.includes('snack') || n.includes('fruit') || n.includes('yogurt')) {
+      cal = 210; prot = 12; carb = 30; fat = 4;
+    }
+
     return {
       foods: [
         {
-          name: notes ? `Balanced Meal (${notes})` : 'Nutritious Mixed Plate',
+          name,
           serving: '1 standard portion (~350g)',
-          calories: 460,
-          protein_g: 38,
-          carbs_g: 42,
-          fat_g: 14,
-          confidence: 'High',
+          calories: cal,
+          protein_g: prot,
+          carbs_g: carb,
+          fat_g: fat,
+          confidence: 'Medium',
         },
       ],
       total: {
-        calories: 460,
-        protein_g: 38,
-        carbs_g: 42,
-        fat_g: 14,
+        calories: cal,
+        protein_g: prot,
+        carbs_g: carb,
+        fat_g: fat,
       },
-      notes: 'Estimated macronutrients based on plate composition. You can adjust portion weights before saving.',
-      food_name: notes ? `Meal (${notes})` : 'Nutritious Mixed Plate',
+      notes: notes
+        ? `Estimated from notes: "${notes}". Note: Connect to the backend server to enable real-time Gemini Vision image recognition.`
+        : 'Estimated plate composition. Connect to the backend server to enable real-time Gemini Vision image recognition.',
+      food_name: name,
       estimated_serving: '1 standard portion (~350g)',
-      estimated_calories: 460,
-      estimated_protein: 38,
-      estimated_carbohydrates: 42,
-      estimated_fat: 14,
+      estimated_calories: cal,
+      estimated_protein: prot,
+      estimated_carbohydrates: carb,
+      estimated_fat: fat,
       detected_foods: [
-        { name: 'Lean Protein Source', confidence: 'High' },
-        { name: 'Complex Carbohydrates', confidence: 'High' },
-        { name: 'Fibrous Vegetables & Healthy Fats', confidence: 'Medium' },
+        { name, confidence: 'Medium' },
       ],
     };
   },
@@ -616,11 +653,6 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   }
 
   return response.json();
-}
-
-function shouldUseFirebase(): boolean {
-  if (getCustomApiUrl()) return false;
-  return isStaticEnvironment();
 }
 
 // -------------------------------------------------------------
@@ -878,43 +910,81 @@ export const api = {
 
   // AI Endpoints
   async analyzeFoodImage(formData: FormData): Promise<FoodAnalysisResult> {
-    if (shouldUseFirebase()) {
-      return firebaseService.analyzeFoodImage(formData);
-    }
+    const aiBase = getAiBackendUrl();
+    const endpoint = aiBase ? `${aiBase}/api/ai/analyze-food` : '/api/ai/analyze-food';
+    const token = getStoredToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     try {
-      return await request('/api/ai/analyze-food', {
+      const response = await fetch(endpoint, {
         method: 'POST',
+        headers,
         body: formData,
       });
+
+      if (!response.ok) {
+        let errMessage = `AI Service returned status ${response.status}`;
+        try {
+          const errData = await response.json();
+          errMessage = errData.error || errData.details || errMessage;
+        } catch {}
+        throw new Error(errMessage);
+      }
+
+      return await response.json();
     } catch (err: any) {
+      console.warn('Backend Gemini AI analysis failed, using fallback estimator:', err?.message);
       return firebaseService.analyzeFoodImage(formData);
     }
   },
 
   async recommendFood(mealType: string = 'dinner'): Promise<RecommendationResponse> {
-    if (shouldUseFirebase()) {
-      return firebaseService.recommendFood(mealType);
-    }
+    const aiBase = getAiBackendUrl();
+    const endpoint = aiBase ? `${aiBase}/api/ai/recommend-food` : '/api/ai/recommend-food';
+    const token = getStoredToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     try {
-      return await request('/api/ai/recommend-food', {
+      const response = await fetch(endpoint, {
         method: 'POST',
+        headers,
         body: JSON.stringify({ meal_type: mealType }),
       });
+
+      if (!response.ok) {
+        throw new Error(`AI Service returned status ${response.status}`);
+      }
+
+      return await response.json();
     } catch (err: any) {
+      console.warn('Backend food recommendation failed, using fallback:', err?.message);
       return firebaseService.recommendFood(mealType);
     }
   },
 
   async sendAIChat(message: string, history: any[]): Promise<{ reply: string; nutritionContext: any }> {
-    if (shouldUseFirebase()) {
-      return firebaseService.sendAIChat(message);
-    }
+    const aiBase = getAiBackendUrl();
+    const endpoint = aiBase ? `${aiBase}/api/ai/chat` : '/api/ai/chat';
+    const token = getStoredToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     try {
-      return await request('/api/ai/chat', {
+      const response = await fetch(endpoint, {
         method: 'POST',
+        headers,
         body: JSON.stringify({ message, history }),
       });
+
+      if (!response.ok) {
+        throw new Error(`AI Chat returned status ${response.status}`);
+      }
+
+      return await response.json();
     } catch (err: any) {
+      console.warn('Backend AI chat failed, using fallback:', err?.message);
       return firebaseService.sendAIChat(message);
     }
   },
