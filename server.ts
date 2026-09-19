@@ -9,6 +9,7 @@ import { db } from './src/db/index.ts';
 import {
   requireAuth,
   requireAdmin,
+  optionalAuth,
   generateToken,
   AuthenticatedRequest,
 } from './src/middleware/auth.ts';
@@ -42,8 +43,11 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Global middleware
-  app.use(cors());
+  // Global middleware with full cross-origin support for GitHub Pages and web clients
+  app.use(cors({
+    origin: true,
+    credentials: true,
+  }));
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -580,7 +584,7 @@ async function startServer() {
   // 1. Analyze Food Image
   app.post(
     '/api/ai/analyze-food',
-    requireAuth,
+    optionalAuth,
     upload.single('image'),
     async (req: AuthenticatedRequest, res) => {
       try {
@@ -590,9 +594,19 @@ async function startServer() {
           return;
         }
 
-        const userId = req.user!.id;
-        // 1. Save image safely in user folder
-        const savedMeta = await saveUserFoodImage(userId, file);
+        const userId = req.user?.id || 1;
+        // 1. Save image safely in user folder if possible
+        let savedMeta = {
+          storage_path: '',
+          original_filename: file.originalname,
+          mime_type: file.mimetype,
+          file_size: file.size,
+        };
+        try {
+          savedMeta = await saveUserFoodImage(userId, file);
+        } catch {
+          // Non-blocking if storage directory is restricted
+        }
 
         // 2. Pass buffer directly to Gemini Vision service
         const analysis = await analyzeFoodImage(
@@ -601,21 +615,25 @@ async function startServer() {
           req.body.notes
         );
 
-        // 3. Log image record
-        await db.createFoodImage({
-          user_id: userId,
-          storage_path: savedMeta.storage_path,
-          original_filename: savedMeta.original_filename,
-          mime_type: savedMeta.mime_type,
-          file_size: savedMeta.file_size,
-          ai_analyzed: true,
-          ai_analysis_json: JSON.stringify(analysis),
-        });
+        // 3. Log image record if storage path available
+        try {
+          if (savedMeta.storage_path) {
+            await db.createFoodImage({
+              user_id: userId,
+              storage_path: savedMeta.storage_path,
+              original_filename: savedMeta.original_filename,
+              mime_type: savedMeta.mime_type,
+              file_size: savedMeta.file_size,
+              ai_analyzed: true,
+              ai_analysis_json: JSON.stringify(analysis),
+            });
+          }
+        } catch {}
 
         res.json({
           ...analysis,
-          image_path: savedMeta.storage_path,
-          image_url: `/api/food-images/${encodeURIComponent(savedMeta.storage_path)}`,
+          image_path: savedMeta.storage_path || '',
+          image_url: savedMeta.storage_path ? `/api/food-images/${encodeURIComponent(savedMeta.storage_path)}` : '',
         });
       } catch (err: any) {
         console.error('AI food analysis error:', err);
@@ -628,12 +646,16 @@ async function startServer() {
   );
 
   // 2. Recommend Food ("Recommend What I Should Eat")
-  app.post('/api/ai/recommend-food', requireAuth, async (req: AuthenticatedRequest, res) => {
+  app.post('/api/ai/recommend-food', optionalAuth, async (req: AuthenticatedRequest, res) => {
     try {
-      const userId = req.user!.id;
-      const profile = await db.getProfileByUserId(userId);
-      const today = new Date().toISOString().split('T')[0];
-      const todayLogs = await db.getFoodLogsByDate(userId, today);
+      const userId = req.user?.id || 1;
+      let profile = null;
+      let todayLogs: any[] = [];
+      try {
+        profile = await db.getProfileByUserId(userId);
+        const today = new Date().toISOString().split('T')[0];
+        todayLogs = await db.getFoodLogsByDate(userId, today);
+      } catch {}
 
       const targetCalories = profile ? profile.calorie_target : 2000;
       const targetProtein = profile ? profile.protein_target : 140;
@@ -668,7 +690,9 @@ async function startServer() {
       const result = await recommendFood(context);
 
       // Log AI recommendation request
-      await db.logRecommendation(userId, `Recommend for ${mealType}`, context, result);
+      try {
+        await db.logRecommendation(userId, `Recommend for ${mealType}`, context, result);
+      } catch {}
 
       res.json(result);
     } catch (err: any) {
@@ -678,43 +702,50 @@ async function startServer() {
   });
 
   // 3. AI Assistant Chat
-  app.post('/api/ai/chat', requireAuth, async (req: AuthenticatedRequest, res) => {
+  app.post('/api/ai/chat', optionalAuth, async (req: AuthenticatedRequest, res) => {
     try {
-      const userId = req.user!.id;
-      const { message, history } = req.body;
+      const userId = req.user?.id || 1;
+      const { message, history, nutritionContext: clientContext } = req.body;
       if (!message) {
         res.status(400).json({ error: 'Message is required.' });
         return;
       }
 
-      const profile = await db.getProfileByUserId(userId);
-      const today = new Date().toISOString().split('T')[0];
-      const todayLogs = await db.getFoodLogsByDate(userId, today);
+      let nutritionContext = clientContext;
+      if (!nutritionContext) {
+        let profile = null;
+        let todayLogs: any[] = [];
+        try {
+          profile = await db.getProfileByUserId(userId);
+          const today = new Date().toISOString().split('T')[0];
+          todayLogs = await db.getFoodLogsByDate(userId, today);
+        } catch {}
 
-      const targetCalories = profile ? profile.calorie_target : 2000;
-      const targetProtein = profile ? profile.protein_target : 140;
-      const targetCarbs = profile ? profile.carb_target : 220;
-      const targetFat = profile ? profile.fat_target : 65;
+        const targetCalories = profile ? profile.calorie_target : 2000;
+        const targetProtein = profile ? profile.protein_target : 140;
+        const targetCarbs = profile ? profile.carb_target : 220;
+        const targetFat = profile ? profile.fat_target : 65;
 
-      const consumedCalories = todayLogs.reduce((acc, f) => acc + f.calories, 0);
-      const consumedProtein = todayLogs.reduce((acc, f) => acc + Number(f.protein), 0);
-      const consumedCarbs = todayLogs.reduce((acc, f) => acc + Number(f.carbohydrates), 0);
-      const consumedFat = todayLogs.reduce((acc, f) => acc + Number(f.fat), 0);
+        const consumedCalories = todayLogs.reduce((acc, f) => acc + f.calories, 0);
+        const consumedProtein = todayLogs.reduce((acc, f) => acc + Number(f.protein), 0);
+        const consumedCarbs = todayLogs.reduce((acc, f) => acc + Number(f.carbohydrates), 0);
+        const consumedFat = todayLogs.reduce((acc, f) => acc + Number(f.fat), 0);
 
-      const nutritionContext = {
-        calorie_target: targetCalories,
-        calories_consumed: Math.round(consumedCalories),
-        remaining_calories: Math.max(0, Math.round(targetCalories - consumedCalories)),
-        protein_target: targetProtein,
-        remaining_protein: Math.max(0, Math.round(targetProtein - consumedProtein)),
-        carb_target: targetCarbs,
-        remaining_carbs: Math.max(0, Math.round(targetCarbs - consumedCarbs)),
-        fat_target: targetFat,
-        remaining_fat: Math.max(0, Math.round(targetFat - consumedFat)),
-        goal: profile ? profile.goal : 'maintain_weight',
-        dietary_preference: profile?.dietary_preference,
-        allergies: profile?.allergies,
-      };
+        nutritionContext = {
+          calorie_target: targetCalories,
+          calories_consumed: Math.round(consumedCalories),
+          remaining_calories: Math.max(0, Math.round(targetCalories - consumedCalories)),
+          protein_target: targetProtein,
+          remaining_protein: Math.max(0, Math.round(targetProtein - consumedProtein)),
+          carb_target: targetCarbs,
+          remaining_carbs: Math.max(0, Math.round(targetCarbs - consumedCarbs)),
+          fat_target: targetFat,
+          remaining_fat: Math.max(0, Math.round(targetFat - consumedFat)),
+          goal: profile ? profile.goal : 'maintain_weight',
+          dietary_preference: profile?.dietary_preference,
+          allergies: profile?.allergies,
+        };
+      }
 
       const reply = await chatWithNutritionAssistant({
         message,
