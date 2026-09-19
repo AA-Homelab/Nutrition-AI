@@ -8,7 +8,7 @@ import {
   RecommendationResponse,
   AdminStats,
 } from '../types.ts';
-import { firebaseService } from './firebaseService.ts';
+import { firebaseService } from './src/lib/firebaseService.ts';
 
 
 const TOKEN_STORAGE_KEY = 'nutritrack_auth_token';
