@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
+import { isStaticEnvironment } from '../lib/api.ts';
 
 interface NavbarProps {
   currentTab: string;
@@ -95,15 +96,22 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab }) => {
               <div className="text-sm font-medium text-slate-800 leading-tight">
                 {user?.display_name || 'User'}
               </div>
-              <span
-                className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                  isAdmin
-                    ? 'bg-indigo-100 text-indigo-700'
-                    : 'bg-emerald-100 text-emerald-700'
-                }`}
-              >
-                {user?.role}
-              </span>
+              <div className="flex items-center space-x-1.5 justify-end">
+                <span
+                  className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                    isAdmin
+                      ? 'bg-indigo-100 text-indigo-700'
+                      : 'bg-emerald-100 text-emerald-700'
+                  }`}
+                >
+                  {user?.role}
+                </span>
+                {isStaticEnvironment() && (
+                  <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-medium border border-emerald-200">
+                    Firebase Sync
+                  </span>
+                )}
+              </div>
             </div>
 
             <button
