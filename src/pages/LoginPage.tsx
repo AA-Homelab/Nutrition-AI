@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, Lock, Mail, AlertCircle, Sparkles, User, ArrowRight } from 'lucide-react';
+import { ShieldCheck, Lock, Mail, AlertCircle, Sparkles, User, ArrowRight, Globe, Server, Check } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
-import { api } from '../lib/api.ts';
+import { api, isStaticEnvironment, getCustomApiUrl, setCustomApiUrl } from '../lib/api.ts';
 
 interface LoginPageProps {
   onLoginSuccess: (profileCompleted: boolean, role: string) => void;
@@ -18,12 +18,22 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
+  const [showServerConfig, setShowServerConfig] = useState(false);
+  const [customUrl, setCustomUrl] = useState(getCustomApiUrl());
+  const [urlSaved, setUrlSaved] = useState(false);
 
   useEffect(() => {
     api.checkBootstrapStatus().then((res) => {
       setNeedsBootstrap(res.needsBootstrap);
     }).catch(() => {});
   }, []);
+
+  const handleSaveCustomUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    setCustomApiUrl(customUrl.trim());
+    setUrlSaved(true);
+    setTimeout(() => setUrlSaved(false), 2500);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -148,17 +158,24 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
             {/* Demo Quick Fills for Instant Evaluation */}
             <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-left">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                Quick Test Accounts:
-              </p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  Quick Test Accounts:
+                </p>
+                {isStaticEnvironment() && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-100 text-emerald-800">
+                    Firebase Cloud Sync
+                  </span>
+                )}
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   id="btn-fill-admin"
                   onClick={handleFillDemoAdmin}
-                  className="px-2.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-emerald-400 hover:bg-emerald-50/40 text-left flex items-center space-x-1.5 transition-colors"
+                  className="px-2.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-emerald-400 hover:bg-emerald-50/40 text-left flex items-center space-x-1.5 transition-colors cursor-pointer"
                 >
-                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
                   <div>
                     <div className="font-semibold text-slate-900">Admin Login</div>
                     <div className="text-[10px] text-slate-500">Manage users</div>
@@ -169,15 +186,54 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   type="button"
                   id="btn-fill-user"
                   onClick={handleFillDemoUser}
-                  className="px-2.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-emerald-400 hover:bg-emerald-50/40 text-left flex items-center space-x-1.5 transition-colors"
+                  className="px-2.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-emerald-400 hover:bg-emerald-50/40 text-left flex items-center space-x-1.5 transition-colors cursor-pointer"
                 >
-                  <User className="w-3.5 h-3.5 text-emerald-600" />
+                  <User className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                   <div>
                     <div className="font-semibold text-slate-900">User Login</div>
                     <div className="text-[10px] text-slate-500">Nutrition tracker</div>
                   </div>
                 </button>
               </div>
+            </div>
+
+            {/* Backend Server Option Toggle */}
+            <div className="mt-3 text-center">
+              <button
+                type="button"
+                onClick={() => setShowServerConfig(!showServerConfig)}
+                className="text-[11px] text-slate-400 hover:text-slate-600 flex items-center justify-center mx-auto space-x-1"
+              >
+                <Server className="w-3 h-3" />
+                <span>{showServerConfig ? 'Hide API Server Settings' : 'Configure Custom API Server'}</span>
+              </button>
+
+              {showServerConfig && (
+                <form onSubmit={handleSaveCustomUrl} className="mt-2.5 p-3 bg-slate-50 rounded-xl border border-slate-200 text-left space-y-2">
+                  <label className="block text-[11px] font-medium text-slate-600">
+                    AI Backend Server URL (for accurate Gemini Vision & Chat):
+                  </label>
+                  <div className="flex space-x-2">
+                    <input
+                      type="url"
+                      value={customUrl}
+                      onChange={(e) => setCustomUrl(e.target.value)}
+                      placeholder="https://ais-pre-strdjehwgqwjs6flv4k77t-944961093674.asia-southeast1.run.app"
+                      className="flex-1 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 text-xs font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center space-x-1"
+                    >
+                      {urlSaved ? <Check className="w-3.5 h-3.5" /> : null}
+                      <span>{urlSaved ? 'Saved' : 'Save'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-tight">
+                    When hosted on GitHub Pages, food photos and AI chat route to your Google AI Studio backend for real-time Gemini Vision analysis, while your meals save to your Firebase Firestore.
+                  </p>
+                </form>
+              )}
             </div>
 
             {needsBootstrap && (
