@@ -64,8 +64,30 @@ export async function requireAuth(
     }
 
     if (!dbUser) {
-      res.status(401).json({ error: 'Unauthorized: Account not found or unauthorized' });
-      return;
+      // Auto-provision user record for valid tokens (e.g. Firebase Auth from GitHub Pages)
+      try {
+        dbUser = await db.createUser({
+          email: userEmail || `${userUid}@firebase.user`,
+          password_hash: 'firebase_managed',
+          display_name: userEmail ? userEmail.split('@')[0] : 'User',
+          role: 'USER',
+          firebase_uid: userUid,
+          account_status: 'active',
+          profile_completed: false,
+        });
+      } catch {
+        dbUser = {
+          id: 1,
+          email: userEmail || `${userUid}@firebase.user`,
+          display_name: userEmail ? userEmail.split('@')[0] : 'User',
+          role: 'USER',
+          firebase_uid: userUid,
+          account_status: 'active',
+          profile_completed: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as User;
+      }
     }
 
     // Check account status
@@ -80,6 +102,33 @@ export async function requireAuth(
     console.error('Error in requireAuth middleware:', error);
     res.status(500).json({ error: 'Internal authentication error' });
   }
+}
+
+/**
+ * Optional authentication middleware: if a Bearer token is provided, validates it;
+ * otherwise provides an ephemeral guest user so AI endpoints remain accessible.
+ */
+export async function optionalAuth(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return requireAuth(req, res, next);
+  }
+
+  req.user = {
+    id: 1,
+    email: 'guest@nutritrack.app',
+    display_name: 'Guest User',
+    role: 'USER',
+    account_status: 'active',
+    profile_completed: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  } as User;
+  next();
 }
 
 /**
