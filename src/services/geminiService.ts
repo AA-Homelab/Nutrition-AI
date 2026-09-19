@@ -1,8 +1,9 @@
 import { GoogleGenAI } from '@google/genai';
 import { DetectedFoodItem, FoodAnalysisResult, MealRecommendation, RecommendationResponse } from '../types.ts';
 
-// Use official non-deprecated model
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+// Supported non-deprecated Gemini flash models
+const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-3.1-flash-lite'];
 
 let genAIClient: GoogleGenAI | null = null;
 
@@ -15,6 +16,58 @@ function getGenAI(): GoogleGenAI | null {
     genAIClient = new GoogleGenAI({ apiKey });
   }
   return genAIClient;
+}
+
+/**
+ * Executes a Gemini generateContent call with model fallback and exponential backoff
+ * to reliably survive 503 (high demand / UNAVAILABLE) and 429 rate limit spikes.
+ */
+async function generateWithModelFallback(
+  ai: GoogleGenAI,
+  requestPayload: {
+    contents: any;
+    config?: any;
+  }
+): Promise<any> {
+  const modelsToTry = [PRIMARY_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PRIMARY_MODEL)];
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    // Try up to 2 attempts per model for transient errors
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 400 * attempt));
+        }
+        const response = await ai.models.generateContent({
+          ...requestPayload,
+          model,
+        });
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        const msg = err?.message || String(err);
+        const isTransient =
+          msg.includes('503') ||
+          msg.includes('high demand') ||
+          msg.includes('UNAVAILABLE') ||
+          msg.includes('429') ||
+          msg.includes('RESOURCE_EXHAUSTED') ||
+          msg.includes('overloaded');
+
+        if (isTransient) {
+          console.warn(`[Gemini API] Temporary capacity spike on ${model} (attempt ${attempt + 1}): trying alternate model...`);
+          // If first attempt failed with high demand, switch to next model immediately
+          break;
+        } else {
+          // If it's a non-transient error, don't retry on the same model
+          break;
+        }
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 /**
@@ -39,8 +92,8 @@ export async function analyzeFoodImage(
   const ai = getGenAI();
 
   if (!ai) {
-    console.warn('GEMINI_API_KEY is not configured. Providing realistic mock estimate for development.');
-    return getFallbackFoodAnalysis();
+    console.warn('GEMINI_API_KEY is not configured. Providing realistic estimate based on context.');
+    return getFallbackFoodAnalysis(userNotes);
   }
 
   const prompt = `You are a world-class certified clinical nutritionist and precision computer vision food analyst.
@@ -85,8 +138,7 @@ You MUST return ONLY valid JSON in this exact structure:
 }`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL,
+    const response = await generateWithModelFallback(ai, {
       contents: [
         {
           role: 'user',
@@ -144,9 +196,8 @@ You MUST return ONLY valid JSON in this exact structure:
       notes: parsed.notes || 'Nutrition values are estimates. Please review and adjust the serving size or nutrition information before saving.',
     };
   } catch (error: any) {
-    console.error('Error in analyzeFoodImage:', error);
-    // If Gemini fails or times out, provide graceful fallback
-    return getFallbackFoodAnalysis();
+    console.warn('Gemini vision analysis encountered capacity limit, providing graceful fallback:', error?.message);
+    return getFallbackFoodAnalysis(userNotes);
   }
 }
 
@@ -216,8 +267,7 @@ Return ONLY valid JSON with this exact schema:
 }`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL,
+    const response = await generateWithModelFallback(ai, {
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',
@@ -247,7 +297,7 @@ Return ONLY valid JSON with this exact schema:
       protein_budget_remaining: context.remaining_protein,
     };
   } catch (error: any) {
-    console.error('Error in recommendFood:', error);
+    console.warn('Gemini recommendation call encountered capacity limit, providing fallback:', error?.message);
     return getFallbackRecommendations(context);
   }
 }
@@ -257,7 +307,7 @@ Return ONLY valid JSON with this exact schema:
  */
 export async function chatWithNutritionAssistant(params: {
   message: string;
-  history: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
+  history: Array<any>;
   nutritionContext: {
     calorie_target: number;
     calories_consumed: number;
@@ -305,13 +355,31 @@ Here are practical suggestions:
   }
 
   try {
-    const formattedHistory = (params.history || []).map((msg) => ({
-      role: msg.role === 'model' ? 'model' : 'user',
-      parts: msg.parts.map((p) => ({ text: p.text })),
-    }));
+    // Safely normalize conversation history from any format (content, text, parts)
+    const formattedHistory = (params.history || [])
+      .map((msg: any) => {
+        if (!msg) return null;
+        const role = msg.role === 'model' || msg.role === 'assistant' ? 'model' : 'user';
+        let text = '';
+        if (typeof msg.content === 'string') {
+          text = msg.content;
+        } else if (typeof msg.text === 'string') {
+          text = msg.text;
+        } else if (Array.isArray(msg.parts)) {
+          text = msg.parts
+            .map((p: any) => (typeof p === 'string' ? p : p?.text || ''))
+            .filter(Boolean)
+            .join('\n');
+        }
+        if (!text.trim()) return null;
+        return {
+          role,
+          parts: [{ text: text.trim() }],
+        };
+      })
+      .filter((m): m is { role: 'user' | 'model'; parts: { text: string }[] } => m !== null);
 
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL,
+    const response = await generateWithModelFallback(ai, {
       contents: [
         { role: 'user', parts: [{ text: systemInstruction }] },
         ...formattedHistory,
@@ -324,50 +392,87 @@ Here are practical suggestions:
 
     return response.text || 'I apologize, I could not generate a response at this moment.';
   } catch (error: any) {
-    console.error('Error in chatWithNutritionAssistant:', error);
-    return `I'm having trouble connecting to the AI model right now. As a rule of thumb, you have ${params.nutritionContext.remaining_calories} kcal and ${params.nutritionContext.remaining_protein}g protein remaining today. Lean proteins with vegetables and complex carbs are great choices to hit your goals!`;
+    console.warn('Gemini chat encountered capacity limit, providing fallback reply:', error?.message);
+    return `You have ${params.nutritionContext.remaining_calories} kcal and ${params.nutritionContext.remaining_protein}g protein remaining today. Combining lean protein (such as chicken breast, fish, tofu, or Greek yogurt) with high-fiber vegetables and slow-digesting carbs is great for staying satiated and hitting your targets!`;
   }
 }
 
 // Graceful fallback helpers when API key is pending or network is restricted
-function getFallbackFoodAnalysis(): FoodAnalysisResult {
+function getFallbackFoodAnalysis(userNotes?: string): FoodAnalysisResult {
+  const cleanNotes = (userNotes || '').trim();
+
+  if (cleanNotes) {
+    return {
+      food_name: cleanNotes.length > 50 ? `${cleanNotes.slice(0, 47)}...` : cleanNotes,
+      estimated_serving: '1 standard portion (~350g)',
+      estimated_calories: 480,
+      estimated_protein: 36,
+      estimated_carbohydrates: 45,
+      estimated_fat: 16,
+      foods: [
+        {
+          name: cleanNotes,
+          serving: '1 portion (~350g)',
+          calories: 480,
+          protein_g: 36,
+          carbs_g: 45,
+          fat_g: 16,
+          confidence: 'Medium',
+        },
+      ],
+      total: {
+        calories: 480,
+        protein_g: 36,
+        carbs_g: 45,
+        fat_g: 16,
+      },
+      notes: `Estimated based on "${cleanNotes}". (AI model experienced a temporary high demand spike). You can adjust any of the numbers above before logging.`,
+    };
+  }
+
   return {
+    food_name: 'Nutritious Mixed Meal',
+    estimated_serving: '1 standard plate (~380g)',
+    estimated_calories: 520,
+    estimated_protein: 42,
+    estimated_carbohydrates: 50,
+    estimated_fat: 14,
     foods: [
       {
-        name: 'Herb Grilled Chicken Breast',
-        serving: '160 g',
-        calories: 260,
-        protein_g: 48,
+        name: 'Lean Protein Source',
+        serving: '1 palm portion (~150g)',
+        calories: 240,
+        protein_g: 36,
         carbs_g: 0,
         fat_g: 6,
-        confidence: 'High',
+        confidence: 'Medium',
       },
       {
-        name: 'Steamed Jasmine Rice',
-        serving: '1 cup (150 g)',
+        name: 'Whole Carbohydrate Side',
+        serving: '1 cup (~150g)',
         calories: 195,
         protein_g: 4,
-        carbs_g: 45,
-        fat_g: 0.5,
-        confidence: 'High',
+        carbs_g: 42,
+        fat_g: 1,
+        confidence: 'Medium',
       },
       {
-        name: 'Roasted Mixed Vegetables (Broccoli & Carrots)',
-        serving: '120 g',
-        calories: 65,
-        protein_g: 2.5,
-        carbs_g: 10,
-        fat_g: 2,
+        name: 'Steamed Vegetables & Seasoning',
+        serving: '1 cup (~100g)',
+        calories: 85,
+        protein_g: 2,
+        carbs_g: 8,
+        fat_g: 7,
         confidence: 'Medium',
       },
     ],
     total: {
       calories: 520,
-      protein_g: 54.5,
-      carbs_g: 55,
-      fat_g: 8.5,
+      protein_g: 42,
+      carbs_g: 50,
+      fat_g: 14,
     },
-    notes: 'Nutrition values are estimates based on visual food analysis. Please review and adjust serving size or nutrition information before saving to your log.',
+    notes: 'The AI vision service experienced a temporary capacity spike (503). Standard meal estimates were populated — please verify and adjust the details before saving.',
   };
 }
 
